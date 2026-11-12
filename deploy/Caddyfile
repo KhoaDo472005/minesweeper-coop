@@ -1,0 +1,4 @@
+# Cách ngắn nhất nếu dùng Caddy: tự lấy HTTPS và tự xử lý WebSocket.
+mine.example.com {
+    reverse_proxy 127.0.0.1:8000
+}
