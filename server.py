@@ -7,6 +7,7 @@ Khi deploy (sau nginx/Caddy):   HOST=127.0.0.1 PORT=8000 python server.py
 Biến môi trường: HOST (mặc định 0.0.0.0), PORT (mặc định 8000), MAX_ROOMS (mặc định 100)
 """
 import base64
+import hashlib
 import json
 import os
 import random
@@ -244,16 +245,33 @@ def sfx_files():
     return out
 
 
+_ver_cache = {}
+
+
+def sfx_version(p):
+    """Mã băng theo NỘI DUNG file (không theo ngày sửa): deploy lại mà file không đổi thì
+    người chơi vẫn dùng bản đã lưu trong trình duyệt, file đổi thì URL đổi."""
+    st = p.stat()
+    key = (str(p), st.st_mtime_ns, st.st_size)
+    v = _ver_cache.get(key)
+    if v is None:
+        v = _ver_cache[key] = hashlib.md5(p.read_bytes()).hexdigest()[:8]
+    return v
+
+
+def sfx_manifest():
+    return {n: f"/sfx/{p.name}?v={sfx_version(p)}" for n, p in sfx_files().items()}
+
+
 async def api_sfx(request):
-    data = {n: f"/sfx/{p.name}?v={int(p.stat().st_mtime)}" for n, p in sfx_files().items()}
-    return web.json_response(data, headers={"Cache-Control": "no-cache"})
+    return web.json_response(sfx_manifest(), headers={"Cache-Control": "no-cache"})
 
 
 async def sfx_file(request):
     name = request.match_info["name"]
     for p in sfx_files().values():
         if p.name == name:
-            # URL có ?v=mtime nên cache dài hạn được
+            # URL có ?v=<mã băm nội dung> nên cache dài hạn được
             return web.FileResponse(p, headers={
                 "Cache-Control": "public, max-age=31536000, immutable",
                 "Content-Type": SFX_MIME.get(p.suffix, "application/octet-stream"),
@@ -262,8 +280,37 @@ async def sfx_file(request):
 
 
 # ---------- HTTP / WebSocket ----------
+_index = {"key": None, "body": b"", "etag": ""}
+
+
+def build_index():
+    """Nhúng danh sách âm thanh thẳng vào trang (đỡ một lượt gọi API), dựng lại khi file đổi."""
+    manifest = sfx_manifest()
+    page = ROOT / "index.html"
+    key = (page.stat().st_mtime_ns, tuple(sorted(manifest.items())))
+    if _index["key"] != key:
+        html = page.read_text(encoding="utf-8")
+        html = html.replace("/*SFX*/null", json.dumps(manifest, separators=(",", ":")), 1)
+        body = html.encode("utf-8")
+        _index.update(key=key, body=body, etag='"' + hashlib.md5(body).hexdigest()[:16] + '"')
+    return _index
+
+
+def etag_match(header, etag):
+    if not header:
+        return False
+    tags = [t.strip() for t in header.split(",")]  # nginx có thể đổi thành dạng yếu W/"..."
+    return "*" in tags or etag in tags or "W/" + etag in tags
+
+
 async def index(request):
-    return web.FileResponse(ROOT / "index.html", headers={"Cache-Control": "no-cache"})
+    page = build_index()
+    headers = {"ETag": page["etag"], "Cache-Control": "no-cache"}  # luôn hỏi lại, nhưng chỉ tốn 304
+    if etag_match(request.headers.get("If-None-Match"), page["etag"]):
+        return web.Response(status=304, headers=headers)
+    resp = web.Response(body=page["body"], content_type="text/html", charset="utf-8", headers=headers)
+    resp.enable_compression()  # gzip: ~22 KB còn khoảng 6 KB
+    return resp
 
 
 async def healthz(request):

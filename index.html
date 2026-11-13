@@ -4,6 +4,27 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>Dò mìn đồng đội</title>
+<script>
+// ======================= ĐƯỜNG DẪN ÂM THANH =======================
+// ""  (để trống) = dùng file cùng tên trong thư mục ./sfx của server game.
+// "https://..."  = trình duyệt tải thẳng từ link đó (vd Cloudflare R2), server game không tốn băng thông.
+// Có thể điền một vài ô, các ô còn lại vẫn lấy từ ./sfx.
+//
+// Khi dùng Cloudflare R2:
+//  1) Bật CORS cho bucket, cho phép tên miền của trang game (GET), nếu không trình duyệt sẽ chặn và không có tiếng.
+//  2) Nên dùng tên miền riêng gắn vào bucket (r2.dev chỉ để thử, có giới hạn tốc độ).
+//  3) Đặt header Cache-Control: public, max-age=31536000, immutable cho các file.
+//  4) Trình duyệt lưu file theo link, nên khi thay file hãy đổi tên hoặc thêm ?v=2 vào cuối link.
+const SFX_SOURCES = {
+  bgm: "https://pub-74140a26077d49dda2fd636952484122.r2.dev/bgm.ogg",       // nhạc nền (lặp liên tục)
+  dig: "https://pub-74140a26077d49dda2fd636952484122.r2.dev/dig.ogg",       // đào 1 ô
+  mass: "https://pub-74140a26077d49dda2fd636952484122.r2.dev/mass.ogg",      // đào hàng loạt (bung vùng trống)
+  flag: "https://pub-74140a26077d49dda2fd636952484122.r2.dev/flag.ogg",      // cắm / gỡ cờ
+  gameover: "https://pub-74140a26077d49dda2fd636952484122.r2.dev/gameover.ogg",  // dẫm mìn
+  win: "https://pub-74140a26077d49dda2fd636952484122.r2.dev/win.ogg",       // thắng ván
+};
+// ===================================================================
+</script>
 <style>
 :root{--bg:#12151c;--panel:#1b2030;--line:#2b3247;--txt:#e6e9f0;--mut:#8b93a7;--acc:#5eead4}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
@@ -27,9 +48,18 @@ input:focus,select:focus{outline:2px solid var(--acc);outline-offset:-1px}
 .row input{text-transform:uppercase;letter-spacing:.2em;text-align:center}
 .err{margin:0;color:#fca5a5;font-size:14px;min-height:1.2em}
 #game{height:100%;display:flex;flex-direction:column}
-#bar{display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--panel);border-bottom:1px solid var(--line);font-size:14px}
-#bar>*{flex:none}
-#players{flex:1 1 auto;min-width:60px;display:flex;gap:12px;overflow-x:auto;scrollbar-width:none}
+#bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;padding:8px 10px;background:var(--panel);border-bottom:1px solid var(--line);font-size:14px}
+#info{flex:1 1 0;min-width:0;display:flex;align-items:center;gap:8px}
+#info>*{flex:none}
+#tools{flex:none;display:flex;gap:8px}
+#mode.flag{border-color:var(--acc);color:var(--acc)}
+#players{flex:1 1 auto;min-width:40px;display:flex;gap:12px;overflow-x:auto;scrollbar-width:none}
+/* Màn hình dọc/hẹp: thanh công cụ xuống hàng riêng, nút Mở/Cờ luôn nằm trong khung */
+@media (max-width:640px){
+  #info,#tools{flex:1 1 100%}
+  #tools button{flex:1;padding:10px 6px}
+  #tools #mode{flex:2}
+}
 #players::-webkit-scrollbar{display:none}
 .pl{white-space:nowrap}
 .pl::before{content:"";display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--c);margin-right:6px}
@@ -78,14 +108,18 @@ input:focus,select:focus{outline:2px solid var(--acc);outline-offset:-1px}
 
 <div id="game" hidden>
   <div id="bar">
-    <button id="codeBtn" title="Sao chép link phòng"></button>
-    <span id="cnt"></span>
-    <div id="players"></div>
-    <span id="mines"></span>
-    <button id="sfxBtn" title="Hiệu ứng âm thanh">🔊</button>
-    <button id="musBtn" title="Nhạc nền">🎵</button>
-    <button id="mode">⛏ Mở</button>
-    <button id="restart" title="Ván mới">↻</button>
+    <div id="info">
+      <button id="codeBtn" title="Sao chép link phòng"></button>
+      <span id="cnt"></span>
+      <div id="players"></div>
+      <span id="mines"></span>
+    </div>
+    <div id="tools">
+      <button id="mode">⛏ Mở</button>
+      <button id="sfxBtn" title="Hiệu ứng âm thanh">🔊</button>
+      <button id="musBtn" title="Nhạc nền">🎵</button>
+      <button id="restart" title="Ván mới">↻</button>
+    </div>
   </div>
   <div id="stage">
     <canvas id="cv"></canvas>
@@ -135,29 +169,85 @@ const playerCount = () => S ? S.names.filter(Boolean).length : 0;
 
 // ---------- âm thanh ----------
 // Đặt file vào ./sfx: bgm, dig, mass, flag, gameover (đuôi .ogg/.mp3/.m4a/.wav), win là tuỳ chọn.
+// Tiết kiệm băng thông:
+//  - danh sách file do server nhúng sẵn vào trang (không gọi thêm API);
+//  - chỉ tải thứ đang cần: nhạc nền khi vào phòng và đang bật nhạc, hiệu ứng khi đang bật tiếng;
+//  - mỗi file tải đúng một lần rồi nằm trong Cache Storage của trình duyệt (URL kèm mã băm nội dung,
+//    file đổi thì URL đổi và bản cũ tự bị xoá). Nếu trình duyệt không có Cache Storage
+//    (vd mở bằng http trong LAN) thì vẫn dùng cache HTTP thông thường (server cho cache 1 năm).
+const SFX_MANIFEST = /*SFX*/null;
 const Snd = (() => {
-  let ctxA = null, bgm = null, unlocked = false, wantMusic = false;
+  const STORE = "ms-sfx-v1", EFFECTS = ["dig", "mass", "flag", "gameover", "win"];
+  let ctxA = null, bgm = null, unlocked = false, wantMusic = false, inGame = false;
+  let manifest = SFX_MANIFEST, merged = null, pMan = null, pSfx = null, pBgm = null, pruned = false;
   const buffers = {}, last = {};
   let sfxOn = lsGet("ms_sfx") !== "0", musOn = lsGet("ms_mus") !== "0";
 
+  async function openStore() {
+    try { return self.caches ? await caches.open(STORE) : null; } catch (e) { return null; }
+  }
+  async function getManifest() {
+    if (!manifest) {
+      pMan = pMan || fetch("/api/sfx").then(r => r.json()).catch(() => ({}));
+      manifest = await pMan;
+    }
+    if (!merged) {  // link điền trong SFX_SOURCES (đầu file) được ưu tiên hơn file trên server
+      merged = Object.assign({}, manifest);
+      const own = typeof SFX_SOURCES === "object" && SFX_SOURCES ? SFX_SOURCES : {};
+      for (const k of Object.keys(own)) if (typeof own[k] === "string" && own[k].trim()) merged[k] = own[k].trim();
+    }
+    if (!pruned) {
+      pruned = true;
+      const store = await openStore();
+      if (store) {
+        try {  // xoá bản âm thanh cũ không còn trong danh sách
+          const keep = new Set(Object.values(merged).map(u => new URL(u, location.href).href));
+          for (const req of await store.keys()) if (!keep.has(req.url)) await store.delete(req);
+        } catch (e) {}
+      }
+    }
+    return merged;
+  }
+  async function fetchBlob(url) {
+    const store = await openStore();
+    if (store) {
+      try { const hit = await store.match(url); if (hit) return await hit.blob(); } catch (e) {}
+    }
+    const res = await fetch(url);
+    if (!res.ok) throw new Error("sfx " + res.status);
+    if (store) { try { await store.put(url, res.clone()); } catch (e) {} }
+    return await res.blob();
+  }
+  function loadSfx() {
+    if (!ctxA) return null;
+    return pSfx || (pSfx = (async () => {
+      const man = await getManifest();
+      await Promise.all(EFFECTS.filter(n => man[n] && !buffers[n]).map(async n => {
+        try { buffers[n] = await ctxA.decodeAudioData(await (await fetchBlob(man[n])).arrayBuffer()); }
+        catch (e) { console.warn("Không tải được âm thanh:", man[n], e); }  // thường do thiếu CORS khi dùng link ngoài
+      }));
+    })());
+  }
+  function loadMusic() {
+    return pBgm || (pBgm = (async () => {
+      const man = await getManifest();
+      if (!man.bgm) return;
+      try {
+        const a = new Audio(URL.createObjectURL(await fetchBlob(man.bgm)));
+        a.loop = true; a.volume = 0.3; bgm = a;
+      } catch (e) { console.warn("Không tải được nhạc nền:", man.bgm, e); }
+      syncMusic();
+    })());
+  }
   function syncMusic() {
     if (!bgm) return;
     if (wantMusic && musOn && unlocked && !document.hidden) { if (bgm.paused) bgm.play().catch(() => {}); }
     else bgm.pause();
   }
-  async function load() {
-    let urls = {};
-    try { urls = await (await fetch("/api/sfx")).json(); } catch (e) {}
-    if (urls.bgm) { bgm = new Audio(urls.bgm); bgm.loop = true; bgm.volume = 0.3; }
-    if (ctxA) {
-      for (const n of ["dig", "mass", "flag", "gameover", "win"]) {
-        if (!urls[n]) continue;
-        try {
-          const ab = await (await fetch(urls[n])).arrayBuffer();
-          buffers[n] = await ctxA.decodeAudioData(ab);
-        } catch (e) {}
-      }
-    }
+  function refresh() {
+    if (!unlocked) return;
+    if (sfxOn && inGame) loadSfx();
+    if (musOn && wantMusic) loadMusic();
     syncMusic();
   }
   // Trình duyệt chỉ cho phát tiếng sau lần chạm đầu tiên của người dùng
@@ -166,10 +256,9 @@ const Snd = (() => {
       unlocked = true;
       const AC = window.AudioContext || window.webkitAudioContext;
       try { if (AC) ctxA = new AC(); } catch (e) {}
-      load();
     }
     if (ctxA && ctxA.state === "suspended") ctxA.resume();
-    syncMusic();
+    refresh();
   }
   function play(n, vol) {
     if (!n || !sfxOn || !ctxA || !buffers[n]) return;
@@ -181,9 +270,9 @@ const Snd = (() => {
     src.buffer = buffers[n]; g.gain.value = vol || 0.7;
     src.connect(g); g.connect(ctxA.destination); src.start();
   }
-  function music(on) { wantMusic = on; syncMusic(); }
-  function toggleSfx() { sfxOn = !sfxOn; lsSet("ms_sfx", sfxOn ? "1" : "0"); return sfxOn; }
-  function toggleMus() { musOn = !musOn; lsSet("ms_mus", musOn ? "1" : "0"); syncMusic(); return musOn; }
+  function music(on) { wantMusic = on; inGame = true; refresh(); }
+  function toggleSfx() { sfxOn = !sfxOn; lsSet("ms_sfx", sfxOn ? "1" : "0"); refresh(); return sfxOn; }
+  function toggleMus() { musOn = !musOn; lsSet("ms_mus", musOn ? "1" : "0"); refresh(); return musOn; }
   document.addEventListener("pointerdown", kick, true);
   document.addEventListener("keydown", kick, true);
   document.addEventListener("visibilitychange", syncMusic);
@@ -474,7 +563,11 @@ function tap(px, py, btn) {
 }
 
 // ---------- nút ----------
-function setMode(m) { mode = m; $("mode").textContent = m === "open" ? "⛏ Mở" : "🚩 Cờ"; }
+function setMode(m) {
+  mode = m;
+  $("mode").textContent = m === "open" ? "⛏ Mở" : "🚩 Cờ";
+  $("mode").classList.toggle("flag", m === "flag");
+}
 $("mode").onclick = () => setMode(mode === "open" ? "flag" : "open");
 addEventListener("keydown", e => {
   if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
